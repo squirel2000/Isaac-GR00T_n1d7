@@ -102,12 +102,12 @@ is on unnormalized actions; meaningful as a relative before/after, not an accura
 
 <h2>5 · Reproduce</h2>
 <div class="card">
-<p>Self-contained launcher: <code>finetune_so100_rtx5090.py</code>; full guide incl. worktree→main-clone
-move: <code>RTX5090_README.md</code> (both in the repo root).</p>
+<p>Self-contained launcher: <code>gr00t/experiment/launch_finetune_asus.py</code>; full guide incl. worktree→main-clone
+move: <code>docs/README_RTX5090.md</code> (both in the repo root).</p>
 <pre>cd /data/Gits/IsaacLab-GR00T/Isaac-GR00T_n1d7
 uv sync --python 3.10
 export CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-uv run python finetune_so100_rtx5090.py \
+uv run python gr00t/experiment/launch_finetune_asus.py \
   --base-model-path nvidia/GR00T-N1.7-3B --dataset-path demo_data/cube_to_bowl_5 \
   --embodiment-tag NEW_EMBODIMENT --modality-config-path examples/SO100/so100_config.py \
   --num-gpus 1 --output-dir /data/gr00t_finetune_10k \
@@ -140,7 +140,7 @@ Write one <code>ModalityConfig</code> per block with <code>modality_keys</code> 
 bimanual <b>OpenArm-O6</b> CanSorting — 26-D state/action
 (<code>left_arm[0:7] right_arm[7:14] left_hand[14:20] right_hand[20:26]</code>), 1 RGB cam
 <code>camera</code>, arms RELATIVE + hands ABSOLUTE, horizon 16 →
-<code>examples/OpenArm_O6/openarm_o6_config.py</code>.</p>
+<code>examples/Openarm_LinkerHandO6/openarm_o6_config.py</code>.</p>
 </div>
 
 <div class="card">

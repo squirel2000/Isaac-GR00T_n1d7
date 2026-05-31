@@ -14,7 +14,8 @@ regardless of batch size — which is why the README recommends 40 GB+ cards.
 This launcher is a thin, non-invasive wrapper around the exact same config pipeline, with
 three changes that make it fit on a 32 GB card:
   1. optim -> "adafactor" by default (factored 2nd moment => optimizer state drops 13 GB -> ~10 MB)
-  2. dataloader workers default to 0 to avoid a fork + AV1-video-decode (torchcodec/ffmpeg)
+  2. recommends 0 dataloader workers (the USAGE example below and finetune_openarm_o6.sh both
+     pass --dataloader-num-workers 0) to avoid a fork + AV1-video-decode (torchcodec/ffmpeg)
      DEADLOCK that otherwise freezes training mid-run (GPU util drops to 1% while VRAM stays
      fully allocated; main proc stuck in futex_wait, workers in do_poll).
   3. exposes optim / gradient-checkpointing via env so you can experiment.
@@ -25,28 +26,32 @@ improves ~59x vs a 60-step checkpoint.
 
 USAGE
 -----
-    # from the repo root, with the uv env synced (see RTX5090_README.md)
+    # Run from the repo root with the uv env synced (see docs/README_RTX5090.md). This example
+    # fine-tunes the SINGLE RIGHT arm+hand (right_only); swap the modality config for bimanual.
     export CUDA_VISIBLE_DEVICES=0
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # reduce fragmentation
-    uv run python finetune_so100_rtx5090.py \
+    export OPTIM=paged_adamw_8bit                             # verified on this box (needs bitsandbytes)
+    nohup uv run python gr00t/experiment/launch_finetune_asus.py \
         --base-model-path nvidia/GR00T-N1.7-3B \
         --dataset-path /data/Gits/IsaacLab-GR00T/datasets/OpenArm_O6_CanSorting_dataset_0408 \
         --embodiment-tag NEW_EMBODIMENT \
-        --modality-config-path examples/OpenArm_O6/openarm_o6_config.py \
+        --modality-config-path examples/Openarm_LinkerHandO6/openarm_o6_config_right_only.py \
         --num-gpus 1 \
-        --output-dir /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_50k \
+        --output-dir /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_right_only_50k \
         --max-steps 50000 \
         --save-steps 2000 \
-        --save-total-limit 3 \
+        --save-total-limit 2 \
         --global-batch-size 16 \
         --gradient-accumulation-steps 2 \
         --dataloader-num-workers 0 \
-        --use-wandb --wandb-project gr00t-openarm-o6_50k \
-        > /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_50k.log 2>&1 &
+        --use-wandb --wandb-project gr00t-openarm-o6_right_only_50k \
+        > /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_right_only_50k.log 2>&1 &
+
+    # Bimanual instead: --modality-config-path examples/Openarm_LinkerHandO6/openarm_o6_config.py
 
 Env knobs:
-    OPTIM         optimizer name (default: adafactor). Try "paged_adamw_8bit" if you
-                  `uv pip install bitsandbytes` and want closer-to-default AdamW dynamics.
+    OPTIM         optimizer name (default: adafactor). "paged_adamw_8bit" is the verified pick on
+                  this box (needs `uv pip install bitsandbytes`); closer-to-default AdamW dynamics.
     GRAD_CKPT     set to "1" to enable gradient checkpointing (lower activation memory,
                   ~20-30% slower; not needed at batch 16 on a 5090).
 
@@ -56,6 +61,7 @@ off. Use a FRESH --output-dir for a clean run from step 0.
 """
 import json
 import os
+import sys
 from pathlib import Path
 
 import tyro
@@ -83,6 +89,11 @@ def main():
         os.environ["LOGURU_LEVEL"] = "INFO"
 
     ft = tyro.cli(FinetuneConfig, description=__doc__)
+    if (
+        "--dataloader-num-workers" not in sys.argv
+        and "--dataloader_num_workers" not in sys.argv
+    ):
+        ft.dataloader_num_workers = 0
 
     from gr00t.data.embodiment_tags import EmbodimentTag
 
@@ -133,11 +144,11 @@ def main():
     config.training.optim = os.environ.get("OPTIM", "adafactor")
     if os.environ.get("GRAD_CKPT", "0") == "1":
         config.training.gradient_checkpointing = True
-    # fork + AV1 video decode in DataLoader workers can deadlock; 0 workers = no fork = safe.
-    # (override on the CLI with --dataloader-num-workers if you switch multiprocessing_context.)
     # <<< END OVERRIDES >>>
 
     config.training.global_batch_size = ft.global_batch_size
+    # 0 workers (set by the shell wrapper / USAGE example) = no fork = no AV1-decode deadlock;
+    # raise via --dataloader-num-workers only with a fork-safe multiprocessing_context.
     config.training.dataloader_num_workers = ft.dataloader_num_workers
     config.training.learning_rate = ft.learning_rate
     config.training.gradient_accumulation_steps = ft.gradient_accumulation_steps

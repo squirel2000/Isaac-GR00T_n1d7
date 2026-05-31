@@ -41,17 +41,28 @@ Under load: SM clock pins ~1275 MHz, ~290 W. Runtime `nvidia-smi -pm/-lgc/-pl` r
 cd /data/Gits/IsaacLab-GR00T/Isaac-GR00T_n1d7
 export CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OPTIM=paged_adamw_8bit
-nohup uv run python finetune_so100_rtx5090.py \
+nohup uv run python gr00t/experiment/launch_finetune_asus.py \
   --base-model-path nvidia/GR00T-N1.7-3B \
   --dataset-path /data/Gits/IsaacLab-GR00T/datasets/OpenArm_O6_CanSorting_dataset_0408 \
   --embodiment-tag NEW_EMBODIMENT \
-  --modality-config-path examples/OpenArm_O6/openarm_o6_config.py \
+  --modality-config-path examples/Openarm_LinkerHandO6/openarm_o6_config.py \
   --num-gpus 1 --output-dir /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_50k \
   --max-steps 50000 --save-steps 2000 --save-total-limit 3 \
   --global-batch-size 16 --gradient-accumulation-steps 2 --dataloader-num-workers 0 \
   --use-wandb --wandb-project gr00t-openarm-o6_50k \
   > /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_50k.log 2>&1 &
 ```
+
+**Single-arm (right_only) variant** — same dataset, but only the right arm + right hand are used.
+Swap the modality config (and pick a distinct output dir); everything else is identical:
+
+```bash
+  --modality-config-path examples/Openarm_LinkerHandO6/openarm_o6_config_right_only.py \
+  --output-dir /data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_O6_CanSorting_0408_right_only_50k \
+```
+
+VRAM is the same as bimanual (the backbone dominates; only the 26→13 action/state dims change),
+so the §2 batch/optimizer settings carry over unchanged.
 
 ## 3. Why the defaults differ from upstream
 
@@ -60,7 +71,7 @@ nohup uv run python finetune_so100_rtx5090.py \
 | Optimizer | `adamw_torch` | **`paged_adamw_8bit`** (or `adafactor`) | AdamW needs ~13 GB fp32 momentum for 1.62 B trainable params → OOM on 32 GB at the first `optimizer.step()`. 8-bit Adam ≈ 3 GB state (peak ~27.5 GB); adafactor ≈ 10 MB (peak ~25 GB). |
 | Batch | `--global-batch-size 32` | **16 × grad-accum 2** | Effective 32; per-device 16 fits comfortably. |
 | Workers | 4 | **0** | `multiprocessing_context="fork"` + video decode → mutex deadlock mid-run. 0 workers = no fork = no deadlock. |
-| Launcher | `gr00t/experiment/launch_finetune.py` | **`finetune_so100_rtx5090.py`** | Upstream hard-codes the optimizer; the wrapper overrides it via env (`OPTIM`, `GRAD_CKPT`) without touching repo code. |
+| Launcher | `gr00t/experiment/launch_finetune.py` | **`gr00t/experiment/launch_finetune_asus.py`** | Upstream hard-codes the optimizer; the wrapper overrides it via env (`OPTIM`, `GRAD_CKPT`) without touching repo code. |
 | GPU power | default 600 W, unlocked clocks | **lgc 510,1500 + pl 400** | See §1 — required for stability. |
 
 ## 4. Fine-tuning a NEW dataset → `--modality-config-path`
@@ -81,7 +92,7 @@ Procedure: read `meta/modality.json`, build one `ModalityConfig` per block (`vid
 | `DELTA` | **unimplemented in N1.7 — do not use** | — |
 
 Worked example: bimanual **OpenArm-O6 CanSorting** (26-D state/action, 1 RGB cam, 1000 eps) →
-[`examples/OpenArm_O6/openarm_o6_config.py`](examples/OpenArm_O6/openarm_o6_config.py)
+[`examples/Openarm_LinkerHandO6/openarm_o6_config.py`](examples/Openarm_LinkerHandO6/openarm_o6_config.py)
 (arms RELATIVE, hands ABSOLUTE, horizon 16; validated: 417 shards / 426 315 samples, no key errors).
 
 ## 5. Monitoring a run
@@ -116,10 +127,5 @@ sudo nvidia-smi -rgc && sudo nvidia-smi -pl 600   # un-set live settings without
 
 ## 7. FAQ
 
-- **Gated backbone:** `nvidia/Cosmos-Reason2-2B` is gated. `uv run hf auth login` and accept the model terms once.
-- **OOM at `optimizer.step()`:** you forgot to set `OPTIM`. Use `paged_adamw_8bit` (needs bitsandbytes) or `adafactor` (no install).
 - **GPU at 1 % util, VRAM full, no progress:** fork DataLoader deadlock. Kill the process and re-run with `--dataloader-num-workers 0`; auto-resumes from the latest checkpoint.
-- **`Rank 0, Worker 0: Caching shard ...`:** GR00T's streaming shard cache (≈1024 frames/shard), unrelated to the optimizer — first touch of an uncached shard stalls a few seconds (`Wait for shard N ... 8.24s`), later hits are `0.00s`. Minor, normal.
-- **Loss plateaus fast** (e.g., 0.06 by step 1000 on the 5-episode SO100 demo): expected on small datasets (overfitting). Collect more demonstrations to actually generalize.
 - **Worktree → main clone move:** nothing is trapped — `.venv` is git-ignored (`uv sync` in the main clone is fast, cache is warm); checkpoints live under `/data/...` already; deliverable scripts are in the repo root. Optionally remove the agent worktree: `git worktree remove .claude/worktrees/<name> --force`.
-- **Pre-train absolute → fine-tune relative:** feasible (the diffusion head adapts because we set `tune_diffusion_model=True`), but suboptimal. N1.7 was pretrained with relative EEF for cross-embodiment transfer, so arms RELATIVE + hands ABSOLUTE matches the model's prior.
