@@ -263,19 +263,9 @@ class Gr00tN1d7ActionHead(nn.Module):
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
-        # Interpretable, action-space MSE for logging only (the loss above is the
-        # velocity-field MSE). Reconstruct the clean action from the predicted
-        # velocity with a single Euler step from t to 1 (x_1 = x_t + (1 - t) * v),
-        # then compare to the ground-truth action. Cheap: no extra denoising pass.
-        with torch.no_grad():
-            recon_actions = noisy_trajectory + (1 - t) * pred_actions
-            recon_se = (recon_actions - actions) ** 2 * action_mask
-            action_mse = recon_se.sum() / (action_mask.sum() + 1e-6)
-
         return {
             "loss": loss,
             "action_loss": action_loss,
-            "action_mse": action_mse,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
             "state_features": state_features,
