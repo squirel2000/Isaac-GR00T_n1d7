@@ -324,6 +324,22 @@ class Gr00tTrainer(Trainer):
         self.loss = loss
 
         # --------------------------------------------------------------
+        # Action-space MSE logging (flow-matching action heads)
+        # --------------------------------------------------------------
+        # ``loss`` above is the velocity-field MSE; ``action_mse`` (set by the
+        # action head) is the same error mapped back to normalized action space,
+        # which is far easier to read alongside the loss.
+        if (
+            self.state.global_step % self.args.logging_steps == 0
+            and model.training
+            and "action_mse" in outputs
+        ):
+            mse_tensor = outputs["action_mse"].detach().to(loss.device)
+            mse_mean = self._nested_gather(mse_tensor).mean().item()
+            if self.args.local_rank in (-1, 0):
+                self.log({"train_action_mse": mse_mean})
+
+        # --------------------------------------------------------------
         # Accuracy calculation
         # --------------------------------------------------------------
         if (

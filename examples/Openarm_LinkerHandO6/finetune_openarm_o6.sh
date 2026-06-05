@@ -18,17 +18,14 @@
 #     MODE=bimanual DATASET_PATH=/data/.../my_dataset OUTPUT_DIR=/data/.../run \
 #         bash examples/Openarm_LinkerHandO6/finetune_openarm_o6.sh
 #
-#     # forward an extra launcher flag
-#     MODE=right_only bash examples/Openarm_LinkerHandO6/finetune_openarm_o6.sh --tune-visual
+#     # also fine-tune the visual encoder (tune flags are env knobs, see below)
+#     MODE=right_only TUNE_VISUAL=--tune-visual \
+#         bash examples/Openarm_LinkerHandO6/finetune_openarm_o6.sh
 #
 # Gated backbone: GR00T-N1.7's Cosmos-Reason2-2B backbone is gated on Hugging Face. Export a
 # token first so weight download succeeds:  export HF_TOKEN=hf_xxx
 #
-# Defaults target gr00t/experiment/launch_finetune.py for remote single-GPU (H100-class) runs.
-# For local RTX 4090/5090 development, set:
-#   LAUNCHER=gr00t/experiment/launch_finetune_asus.py
-# OPTIM is only consumed by launch_finetune_asus.py. This wrapper defaults OPTIM to
-# paged_adamw_8bit on that launcher path (install bitsandbytes first).
+# Targets gr00t/experiment/launch_finetune.py for single-GPU (H100-class) runs.
 # USE_WANDB defaults to on (set USE_WANDB=0 to disable); NUM_GPUS defaults to 1.
 
 set -x -euo pipefail
@@ -49,63 +46,47 @@ case "$MODE" in
 esac
 
 # --- Paths (override via env) ---------------------------------------------------------------
-DEFAULT_REMOTE_LAUNCHER="gr00t/experiment/launch_finetune.py"
-LAUNCHER="${LAUNCHER:-$DEFAULT_REMOTE_LAUNCHER}"
+LAUNCHER="gr00t/experiment/launch_finetune.py"
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-nvidia/GR00T-N1.7-3B}"
-DATASET_PATH="${DATASET_PATH:-/data/Gits/IsaacLab-GR00T/datasets/OpenArm_O6_CanSorting_dataset_0408}"
+DATASET_PATH="${DATASET_PATH:-/data/VLA/datasets/OpenArm_CanSorting_MultiTask_dataset_O6_0403}"
 EMBODIMENT_TAG="${EMBODIMENT_TAG:-NEW_EMBODIMENT}"
-OUTPUT_DIR="${OUTPUT_DIR:-/data/Gits/IsaacLab-GR00T/artifacts/gr00t_openarm_o6_${MODE}_$(date +%m%d)}"
+OUTPUT_DIR="${OUTPUT_DIR:-/data/VLA/experiments/openarmlinkerhando6-multitask-checkpoints/new_embodiment/N1_7_fft_0605_no_tune_visual}"
 mkdir -p "$OUTPUT_DIR"
-
-LAUNCHER_NAME="$(basename "$LAUNCHER")"
-IS_ASUS_LAUNCHER=0
-LAUNCHER_PROFILE="custom"
-case "$LAUNCHER_NAME" in
-    launch_finetune.py)
-        LAUNCHER_PROFILE="remote_default"
-        ;;
-    launch_finetune_asus.py)
-        IS_ASUS_LAUNCHER=1
-        LAUNCHER_PROFILE="local_asus"
-        ;;
-    *)
-        echo "[OpenArm-O6] WARNING: Unrecognized launcher '$LAUNCHER'."
-        echo "[OpenArm-O6] WARNING: CUDA policy falls back to default single-GPU device 0."
-        ;;
-esac
 
 # --- Distributed / runtime ------------------------------------------------------------------
 NUM_GPUS="${NUM_GPUS:-1}"
 MASTER_PORT="${MASTER_PORT:-29505}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# Keep CPU math libraries single-threaded by default (avoids dataloader oversubscription).
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+
+# --- Model tuning flags (env-overridable; defaults mirror FinetuneConfig) --------------------
+# Override with the opposite flag, e.g. TUNE_VISUAL=--tune-visual or TUNE_LLM=--tune-llm.
+# Default: tune the projector + diffusion action head, freeze the LLM + visual encoder.
+TUNE_LLM="${TUNE_LLM:---no-tune-llm}"
+TUNE_VISUAL="${TUNE_VISUAL:---no-tune-visual}"
+TUNE_PROJECTOR="${TUNE_PROJECTOR:---tune-projector}"
+TUNE_DIFFUSION_MODEL="${TUNE_DIFFUSION_MODEL:---tune-diffusion-model}"
 
 # --- Training hyperparameters (conservative single-GPU defaults) -----------------------------
-MAX_STEPS="${MAX_STEPS:-50000}"
-SAVE_STEPS="${SAVE_STEPS:-2000}"
-SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-16}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
+MAX_STEPS="${MAX_STEPS:-300000}"
+SAVE_STEPS="${SAVE_STEPS:-5000}"
+SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-10}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
-LEARNING_RATE="${LEARNING_RATE:-1e-4}"
-WARMUP_RATIO="${WARMUP_RATIO:-0.05}"
+LEARNING_RATE="${LEARNING_RATE:-5e-5}"
+WARMUP_RATIO="${WARMUP_RATIO:-0.1}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-5}"
 STATE_DROPOUT_PROB="${STATE_DROPOUT_PROB:-0.2}"
 SHARD_SIZE="${SHARD_SIZE:-2048}"
 EPISODE_SAMPLING_RATE="${EPISODE_SAMPLING_RATE:-0.1}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-finetune-gr00t-n1d7}"
-
-# OPTIM only affects launch_finetune_asus.py, so set a launcher-specific default here.
-if [ "$IS_ASUS_LAUNCHER" = "1" ]; then
-    export OPTIM="${OPTIM:-paged_adamw_8bit}"
-    OPTIM_STATUS="$OPTIM (used by $LAUNCHER_NAME)"
-else
-    OPTIM_STATUS="${OPTIM:-N/A} (ignored by $LAUNCHER_NAME)"
-    if [ -n "${OPTIM:-}" ]; then
-        echo "[OpenArm-O6] NOTE: OPTIM='$OPTIM' is ignored when using $LAUNCHER_NAME."
-    fi
-fi
 
 # Build the argument list once (keeps the launch command readable).
 # NOTE: flags use the hyphen form to match the launcher's USAGE examples; tyro 0.9.17 (pinned
@@ -128,6 +109,10 @@ TRAIN_ARGS=(
     --warmup-ratio "$WARMUP_RATIO"
     --weight-decay "$WEIGHT_DECAY"
     --state-dropout-prob "$STATE_DROPOUT_PROB"
+    "$TUNE_LLM"
+    "$TUNE_VISUAL"
+    "$TUNE_PROJECTOR"
+    "$TUNE_DIFFUSION_MODEL"
     --shard-size "$SHARD_SIZE"
     --episode-sampling-rate "$EPISODE_SAMPLING_RATE"
     --num-shards-per-epoch "$NUM_SHARDS_PER_EPOCH"
@@ -155,22 +140,13 @@ TRAIN_ARGS+=("$@")
 CUDA_POLICY="multi_gpu_torchrun"
 CUDA_VISIBLE_DEVICES_EFFECTIVE="${CUDA_VISIBLE_DEVICES:-<unset>}"
 if [ "$NUM_GPUS" = "1" ]; then
-    if [ "$IS_ASUS_LAUNCHER" = "1" ]; then
-        # Local Asus launcher: force single-device execution on GPU 0.
-        export CUDA_VISIBLE_DEVICES=0
-        CUDA_POLICY="asus_single_gpu_fixed_to_0"
-    elif [ "$LAUNCHER_NAME" = "launch_finetune.py" ]; then
-        # Remote default launcher: allow either GPU 0 or GPU 1 for single-GPU runs.
-        export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-        if [ "$CUDA_VISIBLE_DEVICES" != "0" ] && [ "$CUDA_VISIBLE_DEVICES" != "1" ]; then
-            echo "For LAUNCHER=$LAUNCHER with NUM_GPUS=1, CUDA_VISIBLE_DEVICES must be 0 or 1." >&2
-            exit 1
-        fi
-        CUDA_POLICY="remote_single_gpu_allow_0_or_1"
-    else
-        export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-        CUDA_POLICY="custom_single_gpu_default_to_0"
+    # Single-GPU runs: default to GPU 0, allow GPU 1.
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+    if [ "$CUDA_VISIBLE_DEVICES" != "0" ] && [ "$CUDA_VISIBLE_DEVICES" != "1" ]; then
+        echo "For NUM_GPUS=1, CUDA_VISIBLE_DEVICES must be 0 or 1." >&2
+        exit 1
     fi
+    CUDA_POLICY="single_gpu_allow_0_or_1"
     CUDA_VISIBLE_DEVICES_EFFECTIVE="$CUDA_VISIBLE_DEVICES"
 fi
 
@@ -180,9 +156,6 @@ PARAMS_FILE="$OUTPUT_DIR/finetune_params.txt"
     echo "Execution time: $(date +'%Y%m%d_%H%M')"
     echo "MODE: $MODE"
     echo "LAUNCHER: $LAUNCHER"
-    echo "LAUNCHER_PROFILE: $LAUNCHER_PROFILE"
-    echo "OPTIM: $OPTIM_STATUS"
-    echo "GRAD_CKPT: ${GRAD_CKPT:-0}"
     echo "USE_WANDB: ${USE_WANDB:-1}"
     echo "NUM_GPUS: $NUM_GPUS"
     echo "CUDA_POLICY: $CUDA_POLICY"
@@ -192,9 +165,8 @@ PARAMS_FILE="$OUTPUT_DIR/finetune_params.txt"
     echo "${TRAIN_ARGS[@]:1}" | sed 's/ --/\n--/g'
 } >"$PARAMS_FILE"
 
-echo "[OpenArm-O6] MODE=$MODE launcher=$LAUNCHER profile=$LAUNCHER_PROFILE output=$OUTPUT_DIR"
+echo "[OpenArm-O6] MODE=$MODE launcher=$LAUNCHER output=$OUTPUT_DIR"
 echo "[OpenArm-O6] NUM_GPUS=$NUM_GPUS CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES_EFFECTIVE"
-echo "[OpenArm-O6] OPTIM=$OPTIM_STATUS"
 
 if [ "$NUM_GPUS" = "1" ]; then
     # NUM_GPUS=1 path: launch a single python process (no torchrun).
