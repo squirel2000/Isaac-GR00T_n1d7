@@ -335,17 +335,17 @@ class Gr00tTrainer(Trainer):
         # prediction_step) restarts identically on every eval run.
         self._eval_rng_counter = 0
 
-        # Multi-GPU caveat: this plain DataLoader is intentionally NOT accelerate-
-        # wrapped, so each rank reads its own eval shards. Shard sizes differ, so
-        # per-rank eval-batch counts differ, and the per-batch metric all-gather can
-        # deadlock when ranks make an unequal number of collective calls. Single-GPU
-        # eval is unaffected; warn loudly otherwise.
+        # Multi-GPU is unsupported for held-out eval: this plain DataLoader is
+        # intentionally NOT accelerate-wrapped, so each rank reads its own eval
+        # shards. Shard sizes differ, so per-rank eval-batch counts differ, and the
+        # per-batch metric all-gather deadlocks when ranks make an unequal number of
+        # collective calls. Fail loudly rather than risk a silent multi-hour hang.
         if self.args.world_size > 1:
-            logging.warning(
-                "Held-out eval uses an unsharded plain DataLoader per rank; with "
-                "world_size=%d, unequal per-rank eval-batch counts may hang the metric "
-                "all-gather. Run eval on a single process if it stalls.",
-                self.args.world_size,
+            raise RuntimeError(
+                f"Held-out eval is single-GPU only, but world_size={self.args.world_size}. "
+                "The eval dataloader is an unsharded per-rank plain DataLoader and the "
+                "per-batch metric all-gather can deadlock on unequal per-rank batch counts. "
+                "Run eval with a single process, or disable eval (--eval-strategy no)."
             )
 
         data_collator = self.data_collator
@@ -366,6 +366,25 @@ class Gr00tTrainer(Trainer):
             dataloader_params["multiprocessing_context"] = self.multiprocessing_context
 
         return torch.utils.data.DataLoader(eval_dataset, **dataloader_params)
+
+    def evaluate(self, *args, **kwargs):
+        """Run held-out evaluation with the data processor in eval mode.
+
+        The state/image processor is shared with the train dataset and defaults to
+        training mode, which applies state dropout (state_dropout_prob) and the
+        random train image transform. Those would corrupt the held-out metric, so
+        switch the processor to eval mode for the duration of evaluation and restore
+        training mode afterwards. Setting it before super().evaluate() (which builds
+        and forks the eval dataloader) means dataloader workers inherit eval mode.
+        """
+        processor = getattr(self.eval_dataset, "processor", None)
+        if processor is not None and hasattr(processor, "eval"):
+            processor.eval()
+        try:
+            return super().evaluate(*args, **kwargs)
+        finally:
+            if processor is not None and hasattr(processor, "train"):
+                processor.train()
 
     def train(
         self,

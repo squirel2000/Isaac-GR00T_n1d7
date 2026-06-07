@@ -58,6 +58,14 @@ def warn_configs(config: Config):
         "global_batch_size must be divisible by num_gpus"
     )
 
+    if config.training.eval_strategy != "no" and config.training.num_gpus > 1:
+        raise ValueError(
+            "Held-out eval (eval_strategy != 'no') is single-GPU only: the eval "
+            "dataloader is an unsharded per-rank plain DataLoader whose metric "
+            "all-gather can deadlock on unequal per-rank batch counts. Set num_gpus=1 "
+            "for runs with eval, or disable eval with --eval-strategy no."
+        )
+
     if config.data.video_backend != "torchcodec":
         warnings.warn(
             "video_backend is not torchcodec. Only torchcodec will be supported in the future."
@@ -265,10 +273,28 @@ def run(config: Config):
         )
     )
 
+    eval_enabled = config.training.eval_strategy != "no" and eval_dataset is not None
+
+    # HF prefixes compute_metrics keys with "eval_"; accept a bare metric name
+    # (e.g. "action_mse") by normalizing it so the callbacks match the logged key.
+    best_metric_name = config.training.save_best_eval_metric_name
+    if best_metric_name and not best_metric_name.startswith("eval_"):
+        logging.info(
+            "Prefixing save_best_eval_metric_name with 'eval_': %s -> eval_%s",
+            best_metric_name,
+            best_metric_name,
+        )
+        best_metric_name = f"eval_{best_metric_name}"
+
     if config.training.save_best_eval_metric_name != "":
+        if not eval_enabled:
+            raise ValueError(
+                "save_best_eval_metric_name is set but evaluation is disabled "
+                "(eval_strategy='no' or no eval dataset). Enable eval or clear the metric."
+            )
         trainer.add_callback(
             BestMetricCheckpointCallback(
-                metric_name=config.training.save_best_eval_metric_name,
+                metric_name=best_metric_name,
                 greater_is_better=config.training.save_best_eval_metric_greater_is_better,
                 exp_cfg_dir=save_cfg_dir,
             )
@@ -280,9 +306,14 @@ def run(config: Config):
                 "early_stopping_patience > 0 requires save_best_eval_metric_name "
                 "(the held-out metric to monitor, e.g. 'eval_action_mse')."
             )
+        if not eval_enabled:
+            raise ValueError(
+                "early_stopping_patience > 0 requires evaluation to be enabled "
+                "(set eval_strategy != 'no' and provide an eval dataset)."
+            )
         trainer.add_callback(
             EvalMetricEarlyStoppingCallback(
-                metric_name=config.training.save_best_eval_metric_name,
+                metric_name=best_metric_name,
                 patience=config.training.early_stopping_patience,
                 min_delta=config.training.early_stopping_min_delta,
                 greater_is_better=config.training.save_best_eval_metric_greater_is_better,

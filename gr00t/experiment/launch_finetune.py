@@ -60,6 +60,13 @@ def split_dataset_episodes(
     Returns:
         (train_indices, val_indices), each a sorted list of episode indices.
     """
+    if not 0.0 < eval_split < 1.0:
+        raise ValueError(
+            f"eval_split must be in the open interval (0, 1) for an in-memory split, "
+            f"got {eval_split}. Disable eval with --eval-strategy no, or provide a "
+            f"dedicated --eval-dataset-path."
+        )
+
     episodes_path = Path(dataset_path) / "meta" / "episodes.jsonl"
     if not episodes_path.exists():
         raise FileNotFoundError(f"Episodes file not found: {episodes_path}")
@@ -69,8 +76,11 @@ def split_dataset_episodes(
         for line in f:
             if line.strip():
                 num_episodes += 1
-    if num_episodes == 0:
-        raise ValueError("No episodes found in dataset")
+    if num_episodes < 2:
+        raise ValueError(
+            f"Need >= 2 episodes to hold out a validation split, found {num_episodes}. "
+            f"Provide --eval-dataset-path or disable eval with --eval-strategy no."
+        )
 
     rng = np.random.default_rng(seed)
     shuffled_indices = rng.permutation(num_episodes)
