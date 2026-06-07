@@ -163,10 +163,12 @@ def _compute_per_joint_metrics(
 ) -> dict[str, float]:
     """Per-dim (and aggregate) held-out action MSE from prediction_step outputs.
 
-    Called once per eval batch (compute_result=False) to accumulate, then once
-    at the end (compute_result=True) to return the final metrics.
+    With batch_eval_metrics off (our setup), HF concatenates every eval batch and
+    calls this once with the full array and compute_result defaulting to True. The
+    per-batch accumulation path (compute_result=False) is kept so the function also
+    works unchanged if batched eval is ever re-enabled.
 
-    predictions shape per batch: [B, 2*action_dim]
+    predictions shape: [total_B, 2*action_dim] (or [B, 2*action_dim] per batch)
       [:, :D]  action_loss summed over the time horizon (already masked in forward())
       [:, D:]  action_mask summed over the time horizon (valid timestep count per dim)
 
@@ -257,6 +259,8 @@ class Gr00tTrainer(Trainer):
         """
         self.action_offset = kwargs.pop("action_offset", None)
         self.multiprocessing_context = kwargs.pop("multiprocessing_context", "fork")
+        # Per-eval-batch counter for deterministic eval seeding (see prediction_step).
+        self._eval_rng_counter = 0
         super().__init__(
             *args,
             **kwargs,
@@ -326,6 +330,23 @@ class Gr00tTrainer(Trainer):
         eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
         if eval_dataset is None:
             raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+        # Reset the per-batch RNG counter so deterministic eval seeding (see
+        # prediction_step) restarts identically on every eval run.
+        self._eval_rng_counter = 0
+
+        # Multi-GPU caveat: this plain DataLoader is intentionally NOT accelerate-
+        # wrapped, so each rank reads its own eval shards. Shard sizes differ, so
+        # per-rank eval-batch counts differ, and the per-batch metric all-gather can
+        # deadlock when ranks make an unequal number of collective calls. Single-GPU
+        # eval is unaffected; warn loudly otherwise.
+        if self.args.world_size > 1:
+            logging.warning(
+                "Held-out eval uses an unsharded plain DataLoader per rank; with "
+                "world_size=%d, unequal per-rank eval-batch counts may hang the metric "
+                "all-gather. Run eval on a single process if it stalls.",
+                self.args.world_size,
+            )
 
         data_collator = self.data_collator
         data_collator = self._get_collator_with_removed_columns(
@@ -460,8 +481,24 @@ class Gr00tTrainer(Trainer):
         HF Trainer concatenates across eval batches → [total_B, 2*D].
         """
         inputs = self._prepare_inputs(inputs)
-        with self.compute_loss_context_manager():
-            loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+        # Deterministic eval (common random numbers): forward() draws a fresh
+        # flow-matching timestep + noise on every call, so without fixing the RNG the
+        # held-out MSE would jitter from sampling noise rather than from the model
+        # improving across eval steps. Seed per eval batch (counter reset at the start
+        # of each eval in get_eval_dataloader) and restore the global RNG afterwards so
+        # training reproducibility is untouched. Identical eval-data order across runs
+        # plus the same per-batch seed ⇒ the same batch sees the same noise every eval.
+        cpu_rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        torch.manual_seed(self.args.seed + self._eval_rng_counter)
+        self._eval_rng_counter += 1
+        try:
+            with self.compute_loss_context_manager():
+                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+        finally:
+            torch.set_rng_state(cpu_rng_state)
+            if cuda_rng_state is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_state)
         loss = loss.detach()
 
         if prediction_loss_only:
@@ -472,4 +509,8 @@ class Gr00tTrainer(Trainer):
         loss_sum = action_loss.sum(dim=1)  # [B, D]
         mask_sum = action_mask.sum(dim=1)  # [B, D]
         logits = torch.cat([loss_sum, mask_sum], dim=-1)  # [B, 2*D]
-        return loss, logits, None
+        # HF's eval loop only invokes compute_metrics when label_ids is not None
+        # (both the batched and the concatenate-once paths gate on it), so return
+        # a placeholder label. The real per-joint MSE is carried entirely in logits.
+        dummy_labels = torch.zeros(logits.shape[0], 1, device=logits.device)
+        return loss, logits, dummy_labels

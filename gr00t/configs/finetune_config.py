@@ -175,6 +175,15 @@ class FinetuneConfig:
     save_best_eval_metric_greater_is_better: bool = False
     """Whether a higher metric value is better. False for loss/MSE-based metrics."""
 
+    early_stopping_patience: int = 0
+    """Stop training after this many consecutive evals without improvement in
+    save_best_eval_metric_name. 0 (default) disables early stopping; the best
+    checkpoint is still saved. Requires save_best_eval_metric_name to be set."""
+
+    early_stopping_min_delta: float = 0.0
+    """Minimum change in the monitored metric to count as an improvement for early
+    stopping. Larger values are stricter (more likely to stop)."""
+
     eval_split: float = 0.1
     """When eval_dataset_path is not provided, split the dataset into train/val with this
     ratio (0.0-1.0). Default 0.1 = 90% train / 10% val. 0.0 disables the in-memory split."""

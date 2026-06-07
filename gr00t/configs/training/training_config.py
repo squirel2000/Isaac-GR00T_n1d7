@@ -75,7 +75,9 @@ class TrainingConfig:
     eval_batch_size: int = 2
     eval_max_shards: int | None = None  # cap eval shards per run; None = all eval shards
     save_best_eval_metric_name: str = ""
-    save_best_eval_metric_greater_is_better: bool = True
+    save_best_eval_metric_greater_is_better: bool = False  # MSE-based metric: lower is better
+    early_stopping_patience: int = 0  # >0 enables early stop on save_best_eval_metric_name
+    early_stopping_min_delta: float = 0.0  # min improvement to reset the patience counter
 
     # DeepSpeed (default)
     deepspeed_stage: int = 2  # ZeRO stage (1, 2, or 3)

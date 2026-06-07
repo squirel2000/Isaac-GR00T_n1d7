@@ -31,7 +31,11 @@ from gr00t.configs.base_config import Config
 
 # Use custom trainer that profiles data loading & forward times
 from gr00t.experiment.trainer import Gr00tTrainer, ProfCallback
-from gr00t.experiment.utils import BestMetricCheckpointCallback, CheckpointFormatCallback
+from gr00t.experiment.utils import (
+    BestMetricCheckpointCallback,
+    CheckpointFormatCallback,
+    EvalMetricEarlyStoppingCallback,
+)
 from gr00t.model import MODEL_REGISTRY
 from gr00t.utils.initial_actions import INITIAL_ACTIONS_FILENAME, save_initial_actions
 
@@ -234,7 +238,11 @@ def run(config: Config):
         ddp_bucket_cap_mb=config.training.ddp_bucket_cap_mb,
         eval_strategy=config.training.eval_strategy,
         eval_steps=config.training.eval_steps,
-        batch_eval_metrics=True,
+        # NOTE: batch_eval_metrics is intentionally left at its default (False).
+        # Our eval dataloader is a plain (non-accelerate) DataLoader, so
+        # gradient_state.end_of_dataloader never becomes True and the batched
+        # `compute_result` flag would never fire. With it off, HF concatenates all
+        # eval batches ([total_B, 2*D], tiny) and calls compute_metrics once.
         remove_unused_columns=config.training.remove_unused_columns,
         ignore_data_skip=True,
     )
@@ -263,6 +271,21 @@ def run(config: Config):
                 metric_name=config.training.save_best_eval_metric_name,
                 greater_is_better=config.training.save_best_eval_metric_greater_is_better,
                 exp_cfg_dir=save_cfg_dir,
+            )
+        )
+
+    if config.training.early_stopping_patience > 0:
+        if config.training.save_best_eval_metric_name == "":
+            raise ValueError(
+                "early_stopping_patience > 0 requires save_best_eval_metric_name "
+                "(the held-out metric to monitor, e.g. 'eval_action_mse')."
+            )
+        trainer.add_callback(
+            EvalMetricEarlyStoppingCallback(
+                metric_name=config.training.save_best_eval_metric_name,
+                patience=config.training.early_stopping_patience,
+                min_delta=config.training.early_stopping_min_delta,
+                greater_is_better=config.training.save_best_eval_metric_greater_is_better,
             )
         )
 

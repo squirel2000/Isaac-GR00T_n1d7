@@ -157,6 +157,15 @@ fi
 if [ "${SAVE_BEST_EVAL_METRIC_GREATER_IS_BETTER:-0}" = "1" ]; then
     TRAIN_ARGS+=(--save-best-eval-metric-greater-is-better)
 fi
+# Optional true early stop (halts training). Default off: best checkpoint is still
+# saved regardless. Requires SAVE_BEST_EVAL_METRIC_NAME to be set.
+#   e.g. EARLY_STOPPING_PATIENCE=5 EARLY_STOPPING_MIN_DELTA=0.0
+if [ -n "${EARLY_STOPPING_PATIENCE:-}" ]; then
+    TRAIN_ARGS+=(--early-stopping-patience "$EARLY_STOPPING_PATIENCE")
+fi
+if [ -n "${EARLY_STOPPING_MIN_DELTA:-}" ]; then
+    TRAIN_ARGS+=(--early-stopping-min-delta "$EARLY_STOPPING_MIN_DELTA")
+fi
 # Forward any remaining CLI args to the launcher (drop an optional leading `--` separator).
 if [ "${1:-}" = "--" ]; then
     shift

@@ -197,6 +197,8 @@ if __name__ == "__main__":
     config.training.save_best_eval_metric_greater_is_better = (
         ft_config.save_best_eval_metric_greater_is_better
     )
+    config.training.early_stopping_patience = ft_config.early_stopping_patience
+    config.training.early_stopping_min_delta = ft_config.early_stopping_min_delta
 
     config.training.save_only_model = ft_config.save_only_model
     config.training.skip_weight_loading = ft_config.skip_weight_loading

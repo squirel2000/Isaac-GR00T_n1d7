@@ -131,3 +131,62 @@ class BestMetricCheckpointCallback(TrainerCallback):
                         shutil.rmtree(self._best_checkpoint_dir)
 
                     self._best_checkpoint_dir = str(best_checkpoint_dir)
+
+
+class EvalMetricEarlyStoppingCallback(TrainerCallback):
+    """Stop training when a held-out eval metric stops improving.
+
+    Mirrors ``transformers.EarlyStoppingCallback`` semantics (patience + min_delta)
+    but reads the metric straight from the eval ``metrics`` dict and only flips
+    ``control.should_training_stop``. Unlike the HF callback it does NOT require
+    ``load_best_model_at_end`` (and the matching save/eval-strategy constraints), so
+    it composes with this repo's custom checkpoint callbacks. Disabled when
+    ``patience <= 0``.
+    """
+
+    def __init__(
+        self,
+        metric_name: str,
+        patience: int,
+        min_delta: float = 0.0,
+        greater_is_better: bool = False,
+    ):
+        self.metric_name = metric_name
+        self.patience = patience
+        self.min_delta = abs(min_delta)
+        self.greater_is_better = greater_is_better
+        self.best_metric = -float("inf") if greater_is_better else float("inf")
+        self.num_stale_evals = 0
+
+    def _is_improvement(self, current: float) -> bool:
+        if self.greater_is_better:
+            return current > self.best_metric + self.min_delta
+        return current < self.best_metric - self.min_delta
+
+    def on_evaluate(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        metrics,
+        **kwargs,
+    ):
+        if self.patience <= 0 or metrics is None:
+            return
+        current = metrics.get(self.metric_name, None)
+        if current is None:
+            return
+
+        if self._is_improvement(current):
+            self.best_metric = current
+            self.num_stale_evals = 0
+        else:
+            self.num_stale_evals += 1
+            if self.num_stale_evals >= self.patience:
+                print(
+                    f"[EarlyStopping] {self.metric_name}={current} did not improve "
+                    f"(best={self.best_metric}, min_delta={self.min_delta}) for "
+                    f"{self.num_stale_evals} eval(s) >= patience={self.patience}; "
+                    f"stopping training at step {state.global_step}."
+                )
+                control.should_training_stop = True
