@@ -154,6 +154,34 @@ class FinetuneConfig:
     num_shards_per_epoch: int = int(1e5)
     """Number of shards to use for the dataset. reduce this number if vram is limited."""
 
+    # --- Evaluation (held-out velocity-field per-joint action MSE) ---
+    eval_dataset_path: str | None = None
+    """Path to a dedicated eval dataset root. Must share the modality layout of dataset_path.
+    If None and eval_split > 0, an in-memory train/val holdout is used instead."""
+
+    eval_strategy: str = "no"
+    """Evaluation strategy: 'no' (disabled), 'steps', or 'epoch'."""
+
+    eval_steps: int = 500
+    """Evaluate every N steps. Only effective when eval_strategy='steps'."""
+
+    eval_max_shards: int | None = None
+    """Cap the number of shards evaluated per run. None evaluates every eval shard.
+    Set to a small number (e.g. 4) to subsample shards for a fast, approximate MSE."""
+
+    save_best_eval_metric_name: str = ""
+    """Metric to track for best-checkpoint saving (e.g. 'eval_action_mse'). Empty = disabled."""
+
+    save_best_eval_metric_greater_is_better: bool = False
+    """Whether a higher metric value is better. False for loss/MSE-based metrics."""
+
+    eval_split: float = 0.1
+    """When eval_dataset_path is not provided, split the dataset into train/val with this
+    ratio (0.0-1.0). Default 0.1 = 90% train / 10% val. 0.0 disables the in-memory split."""
+
+    dataset_split_seed: int = 42
+    """Random seed for the reproducible train/val episode split when using eval_split."""
+
     save_only_model: bool = False
     """If True, save only model weights (skip optimizer/scheduler/RNG states). Cannot resume training from these checkpoints."""
 

@@ -35,6 +35,7 @@ import queue
 import threading
 from typing import Any, Optional
 
+import numpy as np
 import torch
 from transformers.trainer import TRAINER_STATE_NAME, Trainer, TrainerState, get_last_checkpoint
 from transformers.trainer_callback import TrainerCallback
@@ -153,6 +154,57 @@ def _batch_accuracy(
 # Global variables for batched evaluation metrics
 _eval_accuracy_accumulated_correct = 0
 _eval_accuracy_accumulated_total = 0
+_per_joint_loss_sum: Optional[np.ndarray] = None
+_per_joint_mask_sum: Optional[np.ndarray] = None
+
+
+def _compute_per_joint_metrics(
+    eval_pred: EvalPrediction, compute_result: bool = True
+) -> dict[str, float]:
+    """Per-dim (and aggregate) held-out action MSE from prediction_step outputs.
+
+    Called once per eval batch (compute_result=False) to accumulate, then once
+    at the end (compute_result=True) to return the final metrics.
+
+    predictions shape per batch: [B, 2*action_dim]
+      [:, :D]  action_loss summed over the time horizon (already masked in forward())
+      [:, D:]  action_mask summed over the time horizon (valid timestep count per dim)
+
+    The MSE here is the flow-matching velocity-field MSE on held-out data — the
+    same quantity minimized during training, so it is a valid overfitting signal.
+    It is NOT a K-step denoise / action-space rollout error.
+    """
+    global _per_joint_loss_sum, _per_joint_mask_sum
+
+    preds = eval_pred.predictions  # [B, 2*D]
+    D = preds.shape[-1] // 2
+    batch_loss = preds[:, :D].sum(axis=0)  # [D]
+    batch_mask = preds[:, D:].sum(axis=0)  # [D]
+
+    if _per_joint_loss_sum is None:
+        _per_joint_loss_sum = batch_loss
+        _per_joint_mask_sum = batch_mask
+    else:
+        _per_joint_loss_sum = _per_joint_loss_sum + batch_loss
+        _per_joint_mask_sum = _per_joint_mask_sum + batch_mask
+
+    if compute_result:
+        per_joint = _per_joint_loss_sum / np.maximum(_per_joint_mask_sum, 1e-6)
+        result = {
+            f"action_dim_{i:03d}_mse": float(v)
+            for i, (v, m) in enumerate(zip(per_joint, _per_joint_mask_sum))
+            if m > 0
+        }
+        # Aggregate, mask-weighted MSE across all dims — a single curve for
+        # overfitting / best-step detection (use as save_best_eval_metric_name).
+        total_loss = float(_per_joint_loss_sum.sum())
+        total_mask = float(_per_joint_mask_sum.sum())
+        result["action_mse"] = total_loss / max(total_mask, 1e-6)
+        _per_joint_loss_sum = None
+        _per_joint_mask_sum = None
+        return result
+    else:
+        return {}
 
 
 def compute_eval_accuracy(
@@ -208,6 +260,7 @@ class Gr00tTrainer(Trainer):
         super().__init__(
             *args,
             **kwargs,
+            compute_metrics=_compute_per_joint_metrics,
             # compute_metrics=partial(compute_eval_accuracy, action_offset=self.action_offset),
         )
 
@@ -261,6 +314,37 @@ class Gr00tTrainer(Trainer):
             dataloader_params["multiprocessing_context"] = self.multiprocessing_context
 
         return torch.utils.data.DataLoader(self.train_dataset, **dataloader_params)
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        """Return an eval dataloader built the same way as the train dataloader.
+
+        The default HF Trainer eval dataloader is wrapped by accelerate's
+        DataLoaderDispatcher, which tries to NCCL-broadcast CPU tensors across
+        ranks and fails for our IterableDataset. A plain DataLoader (matching
+        get_train_dataloader) bypasses that.
+        """
+        eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
+        if eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+        data_collator = self.data_collator
+        data_collator = self._get_collator_with_removed_columns(
+            data_collator, description="evaluation"
+        )
+        persistent_workers = self.args.dataloader_num_workers > 0
+
+        dataloader_params = {
+            "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": persistent_workers,
+        }
+
+        if self.args.dataloader_num_workers > 0:
+            dataloader_params["multiprocessing_context"] = self.multiprocessing_context
+
+        return torch.utils.data.DataLoader(eval_dataset, **dataloader_params)
 
     def train(
         self,
@@ -365,3 +449,27 @@ class Gr00tTrainer(Trainer):
                 )
 
         return (loss, outputs) if return_outputs else loss
+
+    @torch.no_grad()
+    def prediction_step(self, model, inputs, prediction_loss_only: bool, ignore_keys=None):
+        """Return per-dim action loss/mask sums for compute_metrics aggregation.
+
+        logits shape: [B, 2*action_dim]
+          [:, :D]  action_loss summed over time (already masked in forward())
+          [:, D:]  action_mask summed over time
+        HF Trainer concatenates across eval batches → [total_B, 2*D].
+        """
+        inputs = self._prepare_inputs(inputs)
+        with self.compute_loss_context_manager():
+            loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+        loss = loss.detach()
+
+        if prediction_loss_only:
+            return loss, None, None
+
+        action_loss = outputs["action_loss"].detach().float()  # [B, T, D]
+        action_mask = outputs["action_mask"].detach().float()  # [B, T, D]
+        loss_sum = action_loss.sum(dim=1)  # [B, D]
+        mask_sum = action_mask.sum(dim=1)  # [B, D]
+        logits = torch.cat([loss_sum, mask_sum], dim=-1)  # [B, 2*D]
+        return loss, logits, None

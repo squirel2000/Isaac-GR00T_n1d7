@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import tyro
 
 from gr00t.configs.base_config import get_default_config
@@ -41,6 +42,50 @@ def load_modality_config(modality_config_path: str):
         raise FileNotFoundError(f"Modality config path does not exist: {modality_config_path}")
 
 
+def split_dataset_episodes(
+    dataset_path: str,
+    eval_split: float = 0.1,
+    seed: int = 42,
+) -> tuple[list[int], list[int]]:
+    """Split a dataset's episodes into reproducible (train_indices, val_indices).
+
+    Reads ``meta/episodes.jsonl`` and shuffles with a fixed seed so the holdout is
+    deterministic across runs (and identical on every rank).
+
+    Args:
+        dataset_path: Path to dataset root containing meta/episodes.jsonl.
+        eval_split: Fraction of episodes held out for validation (0.0-1.0).
+        seed: Random seed for the reproducible split.
+
+    Returns:
+        (train_indices, val_indices), each a sorted list of episode indices.
+    """
+    episodes_path = Path(dataset_path) / "meta" / "episodes.jsonl"
+    if not episodes_path.exists():
+        raise FileNotFoundError(f"Episodes file not found: {episodes_path}")
+
+    num_episodes = 0
+    with open(episodes_path, "r") as f:
+        for line in f:
+            if line.strip():
+                num_episodes += 1
+    if num_episodes == 0:
+        raise ValueError("No episodes found in dataset")
+
+    rng = np.random.default_rng(seed)
+    shuffled_indices = rng.permutation(num_episodes)
+
+    num_val = max(1, int(num_episodes * eval_split))
+    val_indices = sorted(shuffled_indices[:num_val].tolist())
+    train_indices = sorted(shuffled_indices[num_val:].tolist())
+
+    print(
+        f"[Dataset Split] Total episodes: {num_episodes}, "
+        f"train: {len(train_indices)}, val: {len(val_indices)}"
+    )
+    return train_indices, val_indices
+
+
 if __name__ == "__main__":
     # Set LOGURU_LEVEL environment variable if not already set (default: INFO)
     if "LOGURU_LEVEL" not in os.environ:
@@ -58,6 +103,34 @@ if __name__ == "__main__":
 
     dataset_paths = [path for path in ft_config.dataset_path.split(os.pathsep) if path]
 
+    # Determine train/val episode indices for an optional in-memory holdout.
+    train_episode_indices = None
+    val_episode_indices = None
+    if ft_config.eval_strategy == "no":
+        print("[Eval] eval_strategy='no' -> evaluation disabled.")
+    elif ft_config.eval_dataset_path is not None:
+        print(f"[Eval] Using provided eval dataset: {ft_config.eval_dataset_path}")
+    elif ft_config.eval_split > 0:
+        if len(dataset_paths) > 1:
+            raise ValueError(
+                "In-memory eval split supports a single dataset path. Provide "
+                "--eval-dataset-path when training on multiple dataset paths."
+            )
+        print(
+            f"[Eval] No eval_dataset_path given -> in-memory split "
+            f"(eval_split={ft_config.eval_split}, seed={ft_config.dataset_split_seed})"
+        )
+        train_episode_indices, val_episode_indices = split_dataset_episodes(
+            dataset_paths[0],
+            eval_split=ft_config.eval_split,
+            seed=ft_config.dataset_split_seed,
+        )
+    else:
+        raise ValueError(
+            "eval_strategy is enabled but no eval source is available: pass "
+            "--eval-dataset-path, or use a positive --eval-split, or set --eval-strategy no."
+        )
+
     config = get_default_config().load_dict(
         {
             "data": {
@@ -67,6 +140,9 @@ if __name__ == "__main__":
                         "dataset_paths": dataset_paths,
                         "mix_ratio": 1.0,
                         "embodiment_tag": embodiment_tag,
+                        "val_dataset_path": ft_config.eval_dataset_path,
+                        "train_episode_indices": train_episode_indices,
+                        "val_episode_indices": val_episode_indices,
                     }
                 ],
             }
@@ -113,6 +189,14 @@ if __name__ == "__main__":
     config.data.shard_size = ft_config.shard_size
     config.data.episode_sampling_rate = ft_config.episode_sampling_rate
     config.data.num_shards_per_epoch = ft_config.num_shards_per_epoch
+
+    config.training.eval_strategy = ft_config.eval_strategy
+    config.training.eval_steps = ft_config.eval_steps
+    config.training.eval_max_shards = ft_config.eval_max_shards
+    config.training.save_best_eval_metric_name = ft_config.save_best_eval_metric_name
+    config.training.save_best_eval_metric_greater_is_better = (
+        ft_config.save_best_eval_metric_greater_is_better
+    )
 
     config.training.save_only_model = ft_config.save_only_model
     config.training.skip_weight_loading = ft_config.skip_weight_loading

@@ -73,6 +73,7 @@ class TrainingConfig:
     eval_steps: int = 500
     eval_set_split_ratio: float = 0.1
     eval_batch_size: int = 2
+    eval_max_shards: int | None = None  # cap eval shards per run; None = all eval shards
     save_best_eval_metric_name: str = ""
     save_best_eval_metric_greater_is_better: bool = True
 

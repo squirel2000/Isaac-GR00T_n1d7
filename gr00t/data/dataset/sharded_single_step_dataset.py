@@ -111,6 +111,8 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: Fraction of episode timesteps to use (for efficiency)
         seed: Random seed for reproducible sharding and sampling
         allow_padding: Whether to allow padding of indices to valid range [0, max_length - 1]
+        episode_indices: Optional subset of episode indices to shard (e.g. a train or
+            val holdout). If None, every episode in the dataset is used.
 
     Example:
         >>> dataset = ShardedSingleStepDataset(
@@ -140,6 +142,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: float = 0.1,
         seed: int = 42,
         allow_padding: bool = False,
+        episode_indices: list[int] | None = None,
     ):
         """Initialize single-step dataset with sharding configuration."""
         super().__init__(dataset_path)
@@ -151,6 +154,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         self.episode_sampling_rate = episode_sampling_rate
         self.seed = seed
         self.allow_padding = allow_padding
+        self.episode_indices = episode_indices
         self.processor = None
         self.rng = np.random.default_rng(seed)
         action_delta_indices = modality_configs["action"].delta_indices
@@ -181,7 +185,14 @@ class ShardedSingleStepDataset(ShardedDataset):
         - Diversity within shards (mix of episodes and timesteps)
         - Reproducible sharding based on seed
         """
-        shuffled_episode_indices = self.rng.permutation(len(self.episode_loader.episode_lengths))
+        # Restrict to the provided episode subset (in-memory train/val holdout)
+        # when episode_indices is given; otherwise use every episode.
+        if self.episode_indices is not None:
+            available_episode_indices = self.episode_indices
+        else:
+            available_episode_indices = list(range(len(self.episode_loader.episode_lengths)))
+
+        shuffled_episode_indices = self.rng.permutation(available_episode_indices)
         num_splits = int(1 / self.episode_sampling_rate)
 
         assert len(shuffled_episode_indices) > 0, (

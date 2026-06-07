@@ -88,6 +88,15 @@ EPISODE_SAMPLING_RATE="${EPISODE_SAMPLING_RATE:-0.1}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-finetune-gr00t-n1d7}"
 
+# --- Evaluation (held-out velocity-field per-joint action MSE) --------------------------------
+# EVAL_STRATEGY defaults to "no" (eval disabled, unchanged behavior). To enable an in-memory
+# holdout eval:  EVAL_STRATEGY=steps EVAL_STEPS=5000 EVAL_SPLIT=0.1 \
+#                SAVE_BEST_EVAL_METRIC_NAME=eval_action_mse  bash .../finetune_openarm_o6.sh
+EVAL_STRATEGY="${EVAL_STRATEGY:-no}"
+EVAL_STEPS="${EVAL_STEPS:-5000}"
+EVAL_SPLIT="${EVAL_SPLIT:-0.1}"
+DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
+
 # Build the argument list once (keeps the launch command readable).
 # NOTE: flags use the hyphen form to match the launcher's USAGE examples; tyro 0.9.17 (pinned
 # in pyproject.toml) accepts either the hyphen or underscore form for dataclass fields.
@@ -118,6 +127,10 @@ TRAIN_ARGS=(
     --num-shards-per-epoch "$NUM_SHARDS_PER_EPOCH"
     --color-jitter-params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08
     --wandb-project "$WANDB_PROJECT"
+    --eval-strategy "$EVAL_STRATEGY"
+    --eval-steps "$EVAL_STEPS"
+    --eval-split "$EVAL_SPLIT"
+    --dataset-split-seed "$DATASET_SPLIT_SEED"
 )
 
 # Optional args, only added when explicitly set via env.
@@ -130,6 +143,19 @@ if [ -n "${EXPERIMENT_NAME:-}" ]; then
 fi
 if [ "${SAVE_ONLY_MODEL:-0}" = "1" ]; then
     TRAIN_ARGS+=(--save-only-model)
+fi
+# Optional eval knobs, only added when explicitly set via env.
+if [ -n "${EVAL_DATASET_PATH:-}" ]; then
+    TRAIN_ARGS+=(--eval-dataset-path "$EVAL_DATASET_PATH")
+fi
+if [ -n "${EVAL_MAX_SHARDS:-}" ]; then
+    TRAIN_ARGS+=(--eval-max-shards "$EVAL_MAX_SHARDS")
+fi
+if [ -n "${SAVE_BEST_EVAL_METRIC_NAME:-}" ]; then
+    TRAIN_ARGS+=(--save-best-eval-metric-name "$SAVE_BEST_EVAL_METRIC_NAME")
+fi
+if [ "${SAVE_BEST_EVAL_METRIC_GREATER_IS_BETTER:-0}" = "1" ]; then
+    TRAIN_ARGS+=(--save-best-eval-metric-greater-is-better)
 fi
 # Forward any remaining CLI args to the launcher (drop an optional leading `--` separator).
 if [ "${1:-}" = "--" ]; then

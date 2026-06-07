@@ -201,6 +201,9 @@ class ShardedMixtureDataset(IterableDataset):
             rank — see "Distributed seeding invariant" above.
         training: Whether in training mode (affects sampling strategy)
         num_shards_per_epoch: Number of shards to sample per epoch during training
+        eval_max_shards: Eval only. Cap on the number of shards visited per eval
+            run; None visits every eval shard. A small value gives a fast,
+            approximate held-out MSE.
 
     Example:
         >>> mixture = ShardedMixtureDataset(
@@ -223,6 +226,7 @@ class ShardedMixtureDataset(IterableDataset):
         training: bool = True,
         num_shards_per_epoch: int = int(1e5),
         override_pretraining_statistics: bool = False,
+        eval_max_shards: int | None = None,
     ):
         """Initialize mixture dataset with datasets, weights, and configuration."""
         self.datasets = datasets
@@ -233,6 +237,7 @@ class ShardedMixtureDataset(IterableDataset):
         self.epoch = 0
         self.processor = processor
         self.override_pretraining_statistics = override_pretraining_statistics
+        self.eval_max_shards = eval_max_shards
 
         # Generate initial shard sampling schedule
         self.shard_sampling_schedule = self.generate_shard_sampling_schedule()
@@ -363,6 +368,19 @@ class ShardedMixtureDataset(IterableDataset):
             shard_sampling_schedule = []
             for i, dataset in enumerate(self.datasets):
                 shard_sampling_schedule.extend([(i, j) for j in range(len(dataset))])
+
+            # Optionally subsample shards for a fast, approximate eval. Done with
+            # a fixed seed so every rank/worker derives the identical subset
+            # before filter_shard_sample_schedule partitions it.
+            if (
+                self.eval_max_shards is not None
+                and 0 < self.eval_max_shards < len(shard_sampling_schedule)
+            ):
+                rng = np.random.default_rng(self.seed)
+                selected = rng.choice(
+                    len(shard_sampling_schedule), size=self.eval_max_shards, replace=False
+                )
+                shard_sampling_schedule = [shard_sampling_schedule[k] for k in sorted(selected)]
         return shard_sampling_schedule
 
     def filter_shard_sample_schedule(self):
@@ -426,6 +444,12 @@ class ShardedMixtureDataset(IterableDataset):
         while True:
             self.curr_shard_index += 1
 
+            # Eval mode: stop after every shard has been visited once
+            if not self.training and self.curr_shard_index >= len(
+                self.worker_shard_sampling_schedule
+            ):
+                break
+
             # Wait for background caching to complete
             wait_start = time.time()
             self.finish_cache_shard()
@@ -457,12 +481,17 @@ class ShardedMixtureDataset(IterableDataset):
         the current schedule is exhausted.
         """
         assert self._executor is not None
-        # Check if epoch is complete and regenerate schedule if needed
+        # Check if epoch is complete and regenerate schedule if needed. In eval
+        # mode there is no next epoch: stop prefetching once shards run out.
         if self.curr_shard_index + 1 >= len(self.worker_shard_sampling_schedule):
-            self.epoch += 1
-            self.shard_sampling_schedule = self.generate_shard_sampling_schedule()
-            self.worker_shard_sampling_schedule = self.filter_shard_sample_schedule()
-            self.curr_shard_index = -1
+            if self.training:
+                self.epoch += 1
+                self.shard_sampling_schedule = self.generate_shard_sampling_schedule()
+                self.worker_shard_sampling_schedule = self.filter_shard_sample_schedule()
+                self.curr_shard_index = -1
+            else:
+                self._cache_job = None
+                return
 
         print(f"Rank {self.rank}, Worker {self.worker_id}: Caching shard...")
         next_dataset_idx, next_shard_idx = self.worker_shard_sampling_schedule[

@@ -46,6 +46,12 @@ class SingleDatasetConfig:
     # If not provided, falls back to dataset_paths for evaluation
     val_dataset_path: Optional[str] = None
 
+    # Optional list of episode indices for training (in-memory train/val split)
+    train_episode_indices: Optional[List[int]] = None
+
+    # Optional list of episode indices for validation (in-memory train/val split)
+    val_episode_indices: Optional[List[int]] = None
+
 
 @dataclass
 class DataConfig:
