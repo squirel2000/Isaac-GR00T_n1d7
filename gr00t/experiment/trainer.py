@@ -331,6 +331,26 @@ class Gr00tTrainer(Trainer):
         if eval_dataset is None:
             raise ValueError("Trainer: evaluation requires an eval_dataset.")
 
+        # The per-joint metric accumulators are reset at the end of a successful
+        # eval, but an exception mid-eval would leave them non-None and the next
+        # eval would silently accumulate on stale data. Reset here (always called
+        # at the start of each eval) so every eval begins from a clean slate.
+        global _per_joint_loss_sum, _per_joint_mask_sum
+        _per_joint_loss_sum = None
+        _per_joint_mask_sum = None
+
+        # The per-joint metric carries its result through `logits` and relies on the
+        # concatenate-once eval path. batch_eval_metrics would instead gate on
+        # gradient_state.end_of_dataloader, which never fires for our plain (non-
+        # accelerate) eval DataLoader, so the metric would never be returned. Enforce
+        # the invariant rather than fail silently.
+        if self.args.batch_eval_metrics:
+            raise RuntimeError(
+                "batch_eval_metrics must be False for held-out eval: the metric uses a "
+                "plain (non-accelerate) DataLoader whose end_of_dataloader never fires, "
+                "so batched compute_result would never trigger and the metric would be lost."
+            )
+
         # Reset the per-batch RNG counter so deterministic eval seeding (see
         # prediction_step) restarts identically on every eval run.
         self._eval_rng_counter = 0

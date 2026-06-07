@@ -57,6 +57,19 @@ class DatasetFactory:
             assert embodiment_tag is not None, "Embodiment tag is required"
             assert self.config.data.mode == "single_turn", "Only single turn mode is supported"
 
+            # In-memory train/val split indices are computed from a single dataset's
+            # episode count, so they are only valid for a single-path spec. Applying
+            # them across multiple paths would silently mismatch episode counts.
+            if (
+                dataset_spec.train_episode_indices is not None
+                or dataset_spec.val_episode_indices is not None
+            ) and len(dataset_spec.dataset_paths) > 1:
+                raise ValueError(
+                    "In-memory train/val episode split supports a single dataset path "
+                    f"per spec, but got {len(dataset_spec.dataset_paths)} paths. Provide "
+                    "a dedicated val_dataset_path for multi-path specs."
+                )
+
             datasets = []
             for dataset_path in dataset_spec.dataset_paths:
                 if torch.distributed.is_initialized():

@@ -98,11 +98,10 @@ class BestMetricCheckpointCallback(TrainerCallback):
         if state.is_world_process_zero and metrics is not None:
             current_metric = metrics.get(self.metric_name, None)
             if current_metric is not None:
-                is_better = (
-                    self.greater_is_better
-                    if current_metric > self.best_metric
-                    else not self.greater_is_better
-                )
+                if self.greater_is_better:
+                    is_better = current_metric > self.best_metric
+                else:
+                    is_better = current_metric < self.best_metric
                 if is_better:
                     self.best_metric = current_metric
                     best_checkpoint_dir = (

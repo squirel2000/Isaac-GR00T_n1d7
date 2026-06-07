@@ -311,6 +311,14 @@ def run(config: Config):
                 "early_stopping_patience > 0 requires evaluation to be enabled "
                 "(set eval_strategy != 'no' and provide an eval dataset)."
             )
+        eval_max_shards = config.training.eval_max_shards
+        if eval_max_shards is not None and eval_max_shards < 5:
+            logging.warning(
+                "early_stopping_patience > 0 with eval_max_shards=%d: too few eval "
+                "shards make eval_action_mse noisy and may trigger premature stops "
+                "(consider eval_max_shards >= 10 or a larger early_stopping_min_delta).",
+                eval_max_shards,
+            )
         trainer.add_callback(
             EvalMetricEarlyStoppingCallback(
                 metric_name=best_metric_name,
