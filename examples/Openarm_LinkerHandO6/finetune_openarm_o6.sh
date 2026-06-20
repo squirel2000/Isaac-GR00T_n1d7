@@ -50,7 +50,7 @@ LAUNCHER="gr00t/experiment/launch_finetune.py"
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-nvidia/GR00T-N1.7-3B}"
 DATASET_PATH="${DATASET_PATH:-/data/VLA/datasets/OpenArm_CanSorting_MultiTask_dataset_O6_0403}"
 EMBODIMENT_TAG="${EMBODIMENT_TAG:-NEW_EMBODIMENT}"
-OUTPUT_DIR="${OUTPUT_DIR:-/data/VLA/experiments/openarmlinkerhando6-multitask-checkpoints/new_embodiment/N1_7_fft_0605_no_tune_visual}"
+OUTPUT_DIR="${OUTPUT_DIR:-/data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/N1_7_fft_0615_150k_lr1e4_absolute_no_tune_visual}"
 mkdir -p "$OUTPUT_DIR"
 
 # --- Distributed / runtime ------------------------------------------------------------------
@@ -75,7 +75,7 @@ TUNE_DIFFUSION_MODEL="${TUNE_DIFFUSION_MODEL:---tune-diffusion-model}"
 # --- Training hyperparameters (conservative single-GPU defaults) -----------------------------
 MAX_STEPS="${MAX_STEPS:-300000}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
-SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-10}"
+SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
